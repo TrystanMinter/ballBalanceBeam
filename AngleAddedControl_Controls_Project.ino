@@ -23,17 +23,17 @@ int16_t ax, ay, az;
 int16_t gx, gy, gz;
 float accAngle[2];
 float gyrAngle[2];
+int minVal=265;
+int maxVal=402;
+float rad_to_deg = 180/3.141592654;
 
 // Define Global Variables for Motor Values
 int speedA;     // Range from 0-255
 int speedB;     // Range from 0-255
 
 // Define Global Variables for Controller Values
-float rad_to_deg = 180/3.141592654;
 long prevT, currT;
 float deltaT;
-long prevT2, currT2;
-float deltaT2;
 float kp, kd, ki;
 float current, desired, desiredDeg;
 float e, e1, e2;
@@ -47,10 +47,9 @@ MPU6050 accelgyro;
 L298NX2 motors(EN_A, IN1_A, IN2_A, EN_B, IN1_B, IN2_B);
 
 // Define Queue Handlers
-QueueHandle_t dataQueue1;       // Handles User Input
-QueueHandle_t dataQueue2;       // Handles Pitch Angle
-QueueHandle_t dataQueue3;       // Handles Pitch Angle 2
-QueueHandle_t dataQueue4;       // Handles Motor Speed
+QueueHandle_t InputQueue;         // Handles User Input
+QueueHandle_t AngleQueue;         // Handles Pitch Angle
+QueueHandle_t SpeedQueue;         // Handles Motor Speed
 
 /* ---------------------------------------------------------------
                             Main
@@ -62,10 +61,9 @@ void setup() {
   while (!Serial) {}
 
   // Initialize Data Queues
-  dataQueue1 = xQueueCreate(1, sizeof(int));
-  dataQueue2 = xQueueCreate(1, sizeof(int));
-  dataQueue3 = xQueueCreate(1, sizeof(int));
-  dataQueue4 = xQueueCreate(1, sizeof(int));
+  InputQueue = xQueueCreate(1, sizeof(int));
+  AngleQueue = xQueueCreate(1, sizeof(float));
+  SpeedQueue = xQueueCreate(1, sizeof(int));
 
   // Set Variable Values
   deltaT = 0;
@@ -87,7 +85,8 @@ void setup() {
   accelgyro.initialize();
 
   // Initialize L298N
-  motors.setSpeed(127);
+  motors.setSpeedA(127);
+  motors.setSpeedB(127);
 
   // FreeRTOS Tasks Setup
   xTaskCreate(                // User Input Task
@@ -141,7 +140,6 @@ void InputTask(void* parameter) {         // Read User Input for Control
   while(true) {
     //Wait for Input
     if(Serial.available() > 0) {
-      Serial.print("Please input integer (0-1023) for desired angle (-36 to 36 degrees): ");
       userInput = Serial.parseInt(); //Read Int from Input
       if(userInput >= 0 && userInput <= 1023) {
         // Process Valid Range
@@ -150,52 +148,42 @@ void InputTask(void* parameter) {         // Read User Input for Control
       }
       else {
         // Handle Invalid Range
-        Serial.println("Invalid input. Enter a number between 0 and 1023.");
+        Serial.println("Invalid input. Enter a number between 0 and 1023. (-36 to 36 degs)");
       }
+    }
+    else  {
+      userInput = 512;
     }
 
     // Queue User Input and Delay
     userInput = (int)userInput;
-    xQueueSend(dataQueue1, &userInput, portMAX_DELAY);
-    delay(10);
+    xQueueSend(InputQueue, &userInput, portMAX_DELAY);
+    vTaskDelay(10);
   }
 }
 
 void GyroTask(void *parameter) {          // Sense and Process Pitch Angle
   (void) parameter;
-  int pitchAngle;
-  int pitchAngle2;
+  float pitchAngle;
+  double x, y, z;
+  int xAng, yAng, zAng;
   
   while (true) {
     // Read Acceleration and Rotation
-    int minVal=265;
-    int maxVal=402;
-    double x, y, z;
     accelgyro.getAcceleration(&ax, &ay, &az);
     accelgyro.getRotation(&gx, &gy, &gz);
 
+    xAng = map(ax,minVal,maxVal,-90,90);    // Finds x acceleration
+    yAng = map(ay,minVal,maxVal,-90,90);    // Finds y acceleration
+    zAng = map(az,minVal,maxVal,-90,90);    // Finds z acceleration
 
-    int xAng = map(ax,minVal,maxVal,-90,90);
-    int yAng = map(ay,minVal,maxVal,-90,90);
-    int zAng = map(az,minVal,maxVal,-90,90);
-    x= RAD_TO_DEG * (atan2(-yAng, -zAng)+PI);
-    y= RAD_TO_DEG * (atan2(-xAng, -zAng)+PI);
-    z= (RAD_TO_DEG * (atan2(-yAng, -xAng)+PI))-270;
-    
-    
-    Serial.print("AngleX:");
-    Serial.print(x);
-    Serial.print(",");
-    Serial.print("AngleY:");
-    Serial.print(y);
-    Serial.print(",");
-    Serial.print("AngleZ:");
-    Serial.println(z);
+    x = RAD_TO_DEG*(atan2(-yAng,-zAng)+PI);         // Finds y-z angle
+    y = RAD_TO_DEG*(atan2(-xAng,-zAng)+PI);         // Finds x-z angle
+    z = (RAD_TO_DEG*(atan2(-yAng,-xAng)+PI))-270;   // Finds x-y angle
 
-    // Queue Pitch Angle and Delay
-    xQueueSend(dataQueue2, &z, portMAX_DELAY);
-    xQueueSend(dataQueue3, &z, portMAX_DELAY);
-    delay(10);
+    // Queue Pitch Angle and Delay (x-y angle)
+    xQueueSend(AngleQueue, &z, portMAX_DELAY);
+    vTaskDelay(10);
   }
 }
 
@@ -205,13 +193,12 @@ void MotorTask(void *parameter) {         // Send Controlled PID Signal to motor
   
   while (true) {
     // Recieve Controlled Speed
-    xQueueReceive(dataQueue4, &receivedSpeed, portMAX_DELAY);
+    xQueueReceive(SpeedQueue, &receivedSpeed, portMAX_DELAY);
     uPWM = receivedSpeed;
 
     /* PROCESS CONTROLLED SPEED TO FIND TWO MOTOR SPEEDS */
-    speedA = 63 + uPWM;
-    speedB = 63 - uPWM;
-
+    speedA = 127 + uPWM;
+    speedB = 127 - uPWM;
 
     // Adjust Motor Speeds to Remove System Error
     motors.setSpeedA(speedA);
@@ -219,7 +206,7 @@ void MotorTask(void *parameter) {         // Send Controlled PID Signal to motor
     motors.forward();
 
     // Delay
-    delay(10);
+    vTaskDelay(10);
   }
 }
 
@@ -227,14 +214,12 @@ void ControlTask(void *parameter) {       // Process Data and Determine Necessar
   (void) parameter;
   int receivedInput;
   int receivedAngle;
-  int receivedAngle2;
   int motorSpeed;
   
   while (true) {
     // Recieve User Input and Pitch Angle
-    xQueueReceive(dataQueue1, &receivedInput, portMAX_DELAY);
-    xQueueReceive(dataQueue2, &receivedAngle, portMAX_DELAY);
-    xQueueReceive(dataQueue3, &receivedAngle2, portMAX_DELAY);
+    xQueueReceive(InputQueue, &receivedInput, portMAX_DELAY);
+    xQueueReceive(AngleQueue, &receivedAngle, portMAX_DELAY);
 
     // Find User's Desired Angle in Degrees
     desired = receivedInput;
@@ -260,16 +245,31 @@ void ControlTask(void *parameter) {       // Process Data and Determine Necessar
     }
 
     // Constrain Control For Motor Signal
-    u = constrain(u, -100, 100);
-    motorSpeed = (int)(abs(u) * 0.62);
+    u = constrain(u, -63, 63);
+    motorSpeed = (int)u;
 
     // Store Previous Error and Control
     e2 = e1;
     e1 = e;
     u1 = u;
 
+    /* POLLING FOR DEBUG*/
+    Serial.print("PitchAngle:");
+    Serial.print(current);
+    Serial.print(",");
+    Serial.print("Desired:");
+    Serial.print(desiredDeg);
+    Serial.print(",");
+    Serial.print("Error:");
+    Serial.print(e);
+    Serial.print("Control:");
+    Serial.print(u);
+    Serial.print(",");
+    Serial.print("MotorSpeed:");
+    Serial.println(motorSpeed);
+
     // Queue Motor Speed and Delay
-    xQueueSend(dataQueue4, &motorSpeed, portMAX_DELAY);
-    delay(10);
+    xQueueSend(SpeedQueue, &motorSpeed, portMAX_DELAY);
+    vTaskDelay(10);
   }
 }
