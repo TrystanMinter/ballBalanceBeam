@@ -9,6 +9,9 @@
 #include <task.h>
 #include <queue.h>
 
+// Define Potentiometer Pin
+#define POT A0
+
 // Define L298N Pins
 #define EN_A 3
 #define IN1_A 5
@@ -35,7 +38,8 @@ int speedB;     // Range from 0-255
 long prevT, currT;
 float deltaT;
 float kp, kd, ki;
-float current, desired, desiredDeg;
+int desired;
+float current, desiredDeg;
 float e, e1, e2;
 float u, u1;
 int uPWM;
@@ -70,7 +74,7 @@ void setup() {
   currT = 0;
   prevT = 0;
   current = 0;
-  desired = 0;
+  desired = 512;
   desiredDeg = 0;
   e = 0;
   e1 = 0;
@@ -92,15 +96,15 @@ void setup() {
   xTaskCreate(                // User Input Task
     InputTask,                // Function
     "Input Task",             // Task Label
-    128,                      // Stack Size
+    256,                      // Stack Size
     NULL,                     // Pointer to Structure Data
     2,                        // Priority
-    NULL);                    // Pointer to Task Handle
+    NULL);        // Pointer to Task Handle
 
   xTaskCreate(                // MPU6050 Task
     GyroTask,                 // Function
     "MPU6050 Task",           // Task Label
-    128,                      // Stack Size
+    256,                      // Stack Size
     NULL,                     // Pointer to Structure Data
     2,                        // Priority
     NULL);                    // Pointer to Task Handle
@@ -108,7 +112,7 @@ void setup() {
   xTaskCreate(                // L298N Task
     MotorTask,                // Function
     "Motor Task",             // Task Label
-    128,                      // Stack Size
+    256,                      // Stack Size
     NULL,                     // Pointer to Structure Data
     2,                        // Priority
     NULL);                    // Pointer to Task Handle
@@ -116,13 +120,15 @@ void setup() {
   xTaskCreate(                // Control Task
     ControlTask,              // Function
     "Control Task",           // Task Label
-    128,                      // Stack Size
+    1024,                     // Stack Size
     NULL,                     // Pointer to Structure Data
     2,                        // Priority
     NULL);                    // Pointer to Task Handle
 
   // Start FreeRTOS
   vTaskStartScheduler();
+
+  Serial.println("IF THIS PRINTS SOMETHING WENT WRONG!");
 }
 
 void loop() {
@@ -138,25 +144,10 @@ void InputTask(void* parameter) {         // Read User Input for Control
   int userInput;
 
   while(true) {
-    //Wait for Input
-    if(Serial.available() > 0) {
-      userInput = Serial.parseInt(); //Read Int from Input
-      if(userInput >= 0 && userInput <= 1023) {
-        // Process Valid Range
-        Serial.print("Received input: ");
-        Serial.println(userInput);
-      }
-      else {
-        // Handle Invalid Range
-        Serial.println("Invalid input. Enter a number between 0 and 1023. (-36 to 36 degs)");
-      }
-    }
-    else  {
-      userInput = 512;
-    }
-
+    // Read input from Potentiometer
+    userInput = analogRead(POT);
+    
     // Queue User Input and Delay
-    userInput = (int)userInput;
     xQueueSend(InputQueue, &userInput, portMAX_DELAY);
     vTaskDelay(10);
   }
@@ -179,7 +170,7 @@ void GyroTask(void *parameter) {          // Sense and Process Pitch Angle
 
     x = RAD_TO_DEG*(atan2(-yAng,-zAng)+PI);         // Finds y-z angle
     y = RAD_TO_DEG*(atan2(-xAng,-zAng)+PI);         // Finds x-z angle
-    z = (RAD_TO_DEG*(atan2(-yAng,-xAng)+PI))-270;   // Finds x-y angle
+    z = (RAD_TO_DEG*(atan2(-yAng,-xAng)+PI))-271;   // Finds x-y angle
 
     // Queue Pitch Angle and Delay (x-y angle)
     xQueueSend(AngleQueue, &z, portMAX_DELAY);
@@ -197,8 +188,8 @@ void MotorTask(void *parameter) {         // Send Controlled PID Signal to motor
     uPWM = receivedSpeed;
 
     /* PROCESS CONTROLLED SPEED TO FIND TWO MOTOR SPEEDS */
-    speedA = 127 + uPWM;
-    speedB = 127 - uPWM;
+    speedA = 192 + uPWM;
+    speedB = 192 - uPWM;
 
     // Adjust Motor Speeds to Remove System Error
     motors.setSpeedA(speedA);
@@ -213,7 +204,7 @@ void MotorTask(void *parameter) {         // Send Controlled PID Signal to motor
 void ControlTask(void *parameter) {       // Process Data and Determine Necessary Controls
   (void) parameter;
   int receivedInput;
-  int receivedAngle;
+  float receivedAngle;
   int motorSpeed;
   
   while (true) {
