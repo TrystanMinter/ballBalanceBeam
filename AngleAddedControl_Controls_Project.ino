@@ -40,8 +40,7 @@ float deltaT;
 float kp, kd, ki;
 int desired;
 float current, desiredDeg;
-float e, e1, e2;
-float u, u1;
+float e, e1, ie, u;
 int uPWM;
 
 // MPU6050
@@ -61,7 +60,7 @@ QueueHandle_t SpeedQueue;         // Handles Motor Speed
 
 void setup() {
   // Initialize Serial
-  Serial.begin(115200);
+  Serial.begin(38400);
   while (!Serial) {}
 
   // Initialize Data Queues
@@ -78,12 +77,10 @@ void setup() {
   desiredDeg = 0;
   e = 0;
   e1 = 0;
-  e2 = 0;
   u = 0;
-  u1 = 0;
-  kp = 3.55;
-  ki = 0.005;
-  kd = 2.05;
+  kp = 3.5;
+  ki = 0.005;   
+  kd = 2;
 
   // Initialize MPU6050
   accelgyro.initialize();
@@ -188,8 +185,8 @@ void MotorTask(void *parameter) {         // Send Controlled PID Signal to motor
     uPWM = receivedSpeed;
 
     /* PROCESS CONTROLLED SPEED TO FIND TWO MOTOR SPEEDS */
-    speedA = 192 + uPWM;
-    speedB = 192 - uPWM;
+    speedA = 120 + uPWM;
+    speedB = 120 - uPWM;
 
     // Adjust Motor Speeds to Remove System Error
     motors.setSpeedA(speedA);
@@ -226,23 +223,23 @@ void ControlTask(void *parameter) {       // Process Data and Determine Necessar
 
     // Find System Error (In Degrees)
     e = desiredDeg - current;
+    ie += e*deltaT;
 
     // Determine Control Signal
-    u = u1 + kp*(e-e1) + ki*deltaT*e1 + (kd/deltaT)*(e-2*e1+e2);
+    u = kp*e + ki*ie + (kd/deltaT)*(e-e1);
 
     // If Error is Small, Control is Not Needed
-    if(abs(e) < 0.5) {
+    if(abs(e) < 3) {
       u = 0;
     }
 
     // Constrain Control For Motor Signal
-    u = constrain(u, -63, 63);
+    u = constrain(u, -120, 120);
     motorSpeed = (int)u;
-
-    // Store Previous Error and Control
-    e2 = e1;
     e1 = e;
-    u1 = u;
+    
+    // Open Loop Control *Uncomment for open loop*
+    // motorSpeed = 0;
 
     /* POLLING FOR DEBUG*/
     Serial.print("PitchAngle:");
@@ -256,8 +253,13 @@ void ControlTask(void *parameter) {       // Process Data and Determine Necessar
     Serial.print("Control:");
     Serial.print(u);
     Serial.print(",");
-    Serial.print("MotorSpeed:");
-    Serial.println(motorSpeed);
+    Serial.print("MotorSpeedA:");
+    int A = 120 + motorSpeed;
+    Serial.print(A);
+    Serial.print(",");
+    Serial.print("MotorSpeedB:");
+    int B = 120 - motorSpeed;
+    Serial.println(B);
 
     // Queue Motor Speed and Delay
     xQueueSend(SpeedQueue, &motorSpeed, portMAX_DELAY);
